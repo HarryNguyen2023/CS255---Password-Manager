@@ -7,6 +7,7 @@ from Crypto.Protocol.KDF import PBKDF2
 from Crypto.Hash import HMAC, SHA256
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
+from Crypto.Util.Padding import pad, unpad
 
 # number of iterations for PBKDF2 algorithm
 PBKDF2_ITERATIONS = 100000
@@ -15,7 +16,8 @@ MAX_PASSWORD_LENGTH = 64
 
 ########## START CODE HERE ##########
 # Add any extra constants you may need
-KEYCHAIN_SALT_LEN = (128 / 8)
+KEYCHAIN_SALT_LEN = 16
+AES_256_DKLEN = 32
 ########### END CODE HERE ###########
 
 
@@ -83,8 +85,8 @@ class Keychain:
         keychain_master_key = PBKDF2(keychain_password, keychain_salt, MAX_PASSWORD_LENGTH, PBKDF2_ITERATIONS, hmac_hash_module=SHA256)
 
         # Derive sub-key for MAC of domain name
-        keychain_mac_sub_key = HMAC.new(keychain_master_key, get_random_bytes(MAX_PASSWORD_LENGTH), digestmod=SHA256).digest()
-        keychain_aes_sub_key = HMAC.new(keychain_master_key, get_random_bytes(MAX_PASSWORD_LENGTH), digestmod=SHA256).digest()
+        keychain_mac_sub_key = HMAC.new(keychain_master_key, get_random_bytes(AES_256_DKLEN), digestmod=SHA256).digest()
+        keychain_aes_sub_key = HMAC.new(keychain_master_key, get_random_bytes(AES_256_DKLEN), digestmod=SHA256).digest()
 
         return Keychain(keychain_salt, keychain_mac_sub_key, keychain_aes_sub_key)
         ########### END CODE HERE ###########
@@ -146,7 +148,23 @@ class Keychain:
             The password for the domain if it exists in the KVS, or None if it does not exist
         """
         ########## START CODE HERE ##########
-        
+        # Create a HMAC object for domain name
+        kvs_key = HMAC.new(self.secrets["keychain_mac_sub_key"], str_to_bytes(domain), digestmod=SHA256).digest()
+        stored_pw_data = self.data["kvs"].get(kvs_key)
+        if stored_pw_data == None:
+            return None
+
+        try:
+            decoded_data = decode_bytes(stored_pw_data)
+            nonce, ciphertext, tag = decoded_data[:16], decoded_data[16:-16], decoded_data[-16:]
+            # Create AES cipher object
+            aes_cipher = AES.new(self.secrets["keychain_aes_sub_key"], AES.MODE_GCM, nonce=nonce)
+            # Get relevant information for encryption and decryption
+            decrypted_data = aes_cipher.decrypt_and_verify(ciphertext, tag)
+            password = bytes_to_str(unpad(decrypted_data, AES.block_size))
+            return password
+        except (ValueError, KeyError):
+            return None
         ########### END CODE HERE ###########
 
     def set(self, domain: str, password: str):
@@ -164,15 +182,20 @@ class Keychain:
             return
         # Create AES cipher object
         aes_cipher = AES.new(self.secrets["keychain_aes_sub_key"], AES.MODE_GCM)
+
         # Get relevant information for encryption and decryption
-        password_ciphetext = aes_cipher.encrypt(str_to_bytes(password))
+        nonce = aes_cipher.nonce
+        ciphetext, tag = aes_cipher.encrypt_and_digest(pad(str_to_bytes(password), AES.block_size))
+        # Combine nonce, ciphertext, and tag
+        combined_data = nonce + ciphetext + tag
+        # Encode to Base64
+        password_ciphertext = encode_bytes(combined_data)
 
         # Create a HMAC object for domain name
-        hmac = HMAC.new(self.secrets["keychain_mac_sub_key"], str_to_bytes(domain), digestmod=SHA256).digest()
+        kvs_key = HMAC.new(self.secrets["keychain_mac_sub_key"], str_to_bytes(domain), digestmod=SHA256).digest()
 
         # Add the KVS into the dictionary
-        new_kvs = {hmac: password_ciphetext}
-        self.data["kvs"].update(new_kvs)
+        self.data["kvs"][kvs_key] = password_ciphertext
         ########### END CODE HERE ###########
 
     def remove(self, domain: str) -> bool:

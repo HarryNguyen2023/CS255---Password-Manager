@@ -16,8 +16,12 @@ MAX_PASSWORD_LENGTH = 64
 
 ########## START CODE HERE ##########
 # Add any extra constants you may need
-KEYCHAIN_SALT_LEN = 16
-AES_256_DKLEN = 32
+KEYCHAIN_SALT_LEN   = 16
+SALT                = get_random_bytes(KEYCHAIN_SALT_LEN)
+
+AES_256_DKLEN       = 32
+HMAC_SALT           = get_random_bytes(AES_256_DKLEN)
+AES_SALT            = get_random_bytes(AES_256_DKLEN)
 ########### END CODE HERE ###########
 
 
@@ -25,9 +29,7 @@ class Keychain:
     def __init__(
         self,
         ########## START CODE HERE ##########
-        keychain_salt: bytes,
-        mac_sub_key: bytes,
-        aes_sub_key: bytes,
+        keychain_password: str,
         ########### END CODE HERE ###########
     ):
         """
@@ -41,6 +43,19 @@ class Keychain:
             None
         """
         ########## START CODE HERE ##########
+        if (len(keychain_password) > MAX_PASSWORD_LENGTH) \
+                or (len(keychain_password) == 0):
+            return None
+
+        # Derive salt for the keychain master key
+        keychain_salt = SALT
+
+        # Derive the key derivation of the input password
+        keychain_master_key = PBKDF2(keychain_password, keychain_salt, MAX_PASSWORD_LENGTH, PBKDF2_ITERATIONS, hmac_hash_module=SHA256)
+
+        # Derive sub-key for MAC of domain name
+        keychain_mac_sub_key = HMAC.new(keychain_master_key, HMAC_SALT, digestmod=SHA256).digest()
+        keychain_aes_sub_key = HMAC.new(keychain_master_key, AES_SALT, digestmod=SHA256).digest()
 
         self.data = {
             # Store member variables that you intend to be public here
@@ -53,8 +68,8 @@ class Keychain:
             # Store member variables that you intend to be private here
             # (information that an adversary should NOT see).
             "keychain_salt": keychain_salt,
-            "keychain_mac_sub_key": mac_sub_key,
-            "keychain_aes_sub_key": aes_sub_key,
+            "keychain_mac_sub_key": keychain_mac_sub_key,
+            "keychain_aes_sub_key": keychain_aes_sub_key,
         }
         ########### END CODE HERE ###########
 
@@ -74,21 +89,7 @@ class Keychain:
             A Keychain instance
         """
         ########## START CODE HERE ##########
-        if (len(keychain_password) > MAX_PASSWORD_LENGTH) \
-                or (len(keychain_password) == 0):
-            return None
-
-        # Derive salt for the keychain master key
-        keychain_salt = get_random_bytes(KEYCHAIN_SALT_LEN)
-
-        # Derive the key derivation of the input password
-        keychain_master_key = PBKDF2(keychain_password, keychain_salt, MAX_PASSWORD_LENGTH, PBKDF2_ITERATIONS, hmac_hash_module=SHA256)
-
-        # Derive sub-key for MAC of domain name
-        keychain_mac_sub_key = HMAC.new(keychain_master_key, get_random_bytes(AES_256_DKLEN), digestmod=SHA256).digest()
-        keychain_aes_sub_key = HMAC.new(keychain_master_key, get_random_bytes(AES_256_DKLEN), digestmod=SHA256).digest()
-
-        return Keychain(keychain_salt, keychain_mac_sub_key, keychain_aes_sub_key)
+        return Keychain(keychain_password)
         ########### END CODE HERE ###########
 
     @staticmethod
@@ -113,10 +114,33 @@ class Keychain:
         Throws:
             ValueError: if the checksum is provided in trusted_data_check and the checksum check fails
             ValueError: if the provided keychain password is not correct for the repr (hint: this is
-                thrown for you by HMAC.verify)
+                thrown for you by AES.verify)
         """
         ########## START CODE HERE ##########
-        raise NotImplementedError("Delete this line once you've implemented Keychain.load")
+        new_keychain = Keychain(keychain_password)
+        if new_keychain == None:
+            return None
+
+        # Verify the hash integrity of KVS loaded from disk
+        repr_hash = SHA256.new(str_to_bytes(repr)).digest()
+        if trusted_data_check != None:
+            if repr_hash != trusted_data_check:
+                raise ValueError("KVS integrity is not correct, quitting the current operation ...")
+
+        kvs_dict = json_str_to_dict(repr)
+        # Verify if the keychain password is correct for the given database
+        for key in kvs_dict["kvs"]:
+            stored_pw_data = kvs_dict["kvs"][key]
+            decoded_data = decode_bytes(stored_pw_data)
+            nonce, ciphertext, tag = decoded_data[:16], decoded_data[16:-16], decoded_data[-16:]
+            # Create AES cipher object
+            aes_cipher = AES.new(new_keychain.secrets["keychain_aes_sub_key"], AES.MODE_GCM, nonce=nonce)
+            # Get relevant information for encryption and decryption
+            decrypted_data = aes_cipher.decrypt_and_verify(ciphertext, tag)
+
+        new_keychain.data.update(kvs_dict)
+        return new_keychain
+
         ########### END CODE HERE ###########
 
     def dump(self) -> Tuple[str, bytes]:

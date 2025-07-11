@@ -135,7 +135,12 @@ class Keychain:
             checksum of the JSON serialization
         """
         ########## START CODE HERE ##########
-        raise NotImplementedError("Delete this line once you've implemented Keychain.dump")
+        try:
+            kvs_dict_str = dict_to_json_str(self.data)
+            kvs_dict_hash = SHA256.new(str_to_bytes(kvs_dict_str)).digest()
+            return (kvs_dict_str, kvs_dict_hash)
+        except (ValueError, KeyError):
+            return (None, None)
         ########### END CODE HERE ###########
 
     def get(self, domain: str) -> Optional[str]:
@@ -150,11 +155,12 @@ class Keychain:
         ########## START CODE HERE ##########
         # Create a HMAC object for domain name
         kvs_key = HMAC.new(self.secrets["keychain_mac_sub_key"], str_to_bytes(domain), digestmod=SHA256).digest()
-        stored_pw_data = self.data["kvs"].get(kvs_key)
-        if stored_pw_data == None:
+        encode_kvs_key = encode_bytes(kvs_key)
+        if encode_kvs_key not in self.data["kvs"]:
             return None
 
         try:
+            stored_pw_data = self.data["kvs"][encode_kvs_key]
             decoded_data = decode_bytes(stored_pw_data)
             nonce, ciphertext, tag = decoded_data[:16], decoded_data[16:-16], decoded_data[-16:]
             # Create AES cipher object
@@ -193,9 +199,9 @@ class Keychain:
 
         # Create a HMAC object for domain name
         kvs_key = HMAC.new(self.secrets["keychain_mac_sub_key"], str_to_bytes(domain), digestmod=SHA256).digest()
-
+        encode_kvs_key = encode_bytes(kvs_key)
         # Add the KVS into the dictionary
-        self.data["kvs"][kvs_key] = password_ciphertext
+        self.data["kvs"][encode_kvs_key] = password_ciphertext
         ########### END CODE HERE ###########
 
     def remove(self, domain: str) -> bool:
@@ -209,5 +215,11 @@ class Keychain:
             True if the domain existed in the KVS and was removed, False otherwise
         """
         ########## START CODE HERE ##########
-        raise NotImplementedError("Delete this line once you've implemented Keychain.remove")
+        kvs_key = HMAC.new(self.secrets["keychain_mac_sub_key"], str_to_bytes(domain), digestmod=SHA256).digest()
+        encode_kvs_key = encode_bytes(kvs_key)
+        if encode_kvs_key not in self.data["kvs"]:
+            return False
+
+        del self.data["kvs"][encode_kvs_key]
+        return True
         ########### END CODE HERE ###########

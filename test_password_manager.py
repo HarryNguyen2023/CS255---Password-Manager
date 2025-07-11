@@ -2,7 +2,7 @@ from json.decoder import JSONDecodeError
 import pytest
 
 from password_manager import Keychain
-from util import decode_bytes, json_str_to_dict
+from util import decode_bytes, json_str_to_dict, dict_to_json_str
 
 
 PASSWORD = "password123!"  # note: this isn't a good password!
@@ -129,3 +129,21 @@ class TestAutogradability:
         assert len(contents_dict['kvs']) == len(KVS), \
             "The KVS in the JSON object returned by Keychain.dump does not contain the \
                 correct number of domain/password pairs"
+        
+class TestSwapAttack:
+    def test_against_swap_attack(self):
+        keychain = Keychain.new(PASSWORD)
+        for key, val in KVS.items():
+            keychain.set(key, val)
+
+        contents, checksum = keychain.dump()
+        contents_dict = json_str_to_dict(contents)
+        password = []
+        for key in contents_dict["kvs"]:
+            password.append(contents_dict["kvs"][key])
+
+        for key in contents_dict["kvs"]:
+            contents_dict["kvs"][key] = password.pop(-1)
+        
+        with pytest.raises(ValueError):
+            Keychain.load(PASSWORD, dict_to_json_str(contents_dict), checksum)

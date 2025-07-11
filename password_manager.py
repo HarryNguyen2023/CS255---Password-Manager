@@ -132,7 +132,10 @@ class Keychain:
         for key in kvs_dict["kvs"]:
             stored_pw_data = kvs_dict["kvs"][key]
             decoded_data = decode_bytes(stored_pw_data)
-            nonce, ciphertext, tag = decoded_data[:16], decoded_data[16:-16], decoded_data[-16:]
+            nonce, ciphertext, tag, key_hash = decoded_data[:16], decoded_data[16:-48], decoded_data[-48:-32], decoded_data[-32:]
+            # Verify swap attack
+            if key_hash != SHA256.new(decode_bytes(key)).digest():
+                raise ValueError("Key and value has been interchanged, quitting ...")
             # Create AES cipher object
             aes_cipher = AES.new(new_keychain.secrets["keychain_aes_sub_key"], AES.MODE_GCM, nonce=nonce)
             # Get relevant information for encryption and decryption
@@ -186,7 +189,10 @@ class Keychain:
         try:
             stored_pw_data = self.data["kvs"][encode_kvs_key]
             decoded_data = decode_bytes(stored_pw_data)
-            nonce, ciphertext, tag = decoded_data[:16], decoded_data[16:-16], decoded_data[-16:]
+            nonce, ciphertext, tag, key_hash = decoded_data[:16], decoded_data[16:-48], decoded_data[-48:-32], decoded_data[-32:]
+            # Verify swap attack
+            if key_hash != SHA256.new(kvs_key).digest():
+                raise ValueError("Key and value has been interchanged, quitting ...")
             # Create AES cipher object
             aes_cipher = AES.new(self.secrets["keychain_aes_sub_key"], AES.MODE_GCM, nonce=nonce)
             # Get relevant information for encryption and decryption
@@ -208,22 +214,27 @@ class Keychain:
             password: the password for the provided domain
         """
         ########## START CODE HERE ##########
-        if (len(password) > MAX_PASSWORD_LENGTH) or (len(password) == 0):
+        if (len(password) > MAX_PASSWORD_LENGTH) \
+                or (len(password) == 0):
             return
+        
+        # Create a HMAC object for domain name
+        kvs_key = HMAC.new(self.secrets["keychain_mac_sub_key"], str_to_bytes(domain), digestmod=SHA256).digest()
+        encode_kvs_key = encode_bytes(kvs_key)
+
         # Create AES cipher object
         aes_cipher = AES.new(self.secrets["keychain_aes_sub_key"], AES.MODE_GCM)
 
         # Get relevant information for encryption and decryption
         nonce = aes_cipher.nonce
         ciphetext, tag = aes_cipher.encrypt_and_digest(pad(str_to_bytes(password), AES.block_size))
-        # Combine nonce, ciphertext, and tag
-        combined_data = nonce + ciphetext + tag
+        # Get the hash value of the domain name
+        key_hash = SHA256.new(kvs_key).digest()
+        # Combine nonce, ciphertext, and tag + hash of the key to avoid swap attack
+        combined_data = nonce + ciphetext + tag + key_hash
         # Encode to Base64
         password_ciphertext = encode_bytes(combined_data)
-
-        # Create a HMAC object for domain name
-        kvs_key = HMAC.new(self.secrets["keychain_mac_sub_key"], str_to_bytes(domain), digestmod=SHA256).digest()
-        encode_kvs_key = encode_bytes(kvs_key)
+        
         # Add the KVS into the dictionary
         self.data["kvs"][encode_kvs_key] = password_ciphertext
         ########### END CODE HERE ###########
